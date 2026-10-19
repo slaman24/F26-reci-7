@@ -31,4 +31,53 @@ describe('mergeIntervals', () => {
 
   // Add your properties here. Aim for at least one of each pattern:
   // invariant, algebraic, metamorphic, differential, conditional.
+
+  // Pattern: invariant. The output is sorted.
+  it('the output is sorted', () => {
+    fc.assert(
+      fc.property(intervalList, xs => {
+        const out = mergeIntervals(xs);
+        for (let i = 0; i < out.length - 1; i++) {
+          expect(out[i][0]).toBeLessThanOrEqual(out[i + 1][0]);
+        }
+      }),
+    );
+  });
+
+  // Pattern: invariant. The output has no overlapping or touching intervals.
+  it('the output has no overlapping or touching intervals', () => {
+    fc.assert(
+      fc.property(intervalList, xs => {
+        const out = mergeIntervals(xs);
+        for (let i = 0; i < out.length - 1; i++) {
+          expect(out[i][1]).toBeLessThan(out[i + 1][0]);
+        }
+      }),
+    );
+  });
+
+  // Pattern: metamorphic. Merging the output with itself gives the same output.
+  it('merging the output with itself gives the same output', () => {
+    fc.assert(
+      fc.property(intervalList, xs => {
+        const out = mergeIntervals(xs);
+        const out2 = mergeIntervals(out);
+        expect(out2).toEqual(out);
+      }),
+    );
+  });
+
+  // Pattern: differential. Merging the output with a new interval that is already covered by the output gives the same output.
+  it('merging the output with a covered interval gives the same output', () => {
+    fc.assert(
+      fc.property(intervalList, xs => {
+        const out = mergeIntervals(xs);
+        if (out.length === 0) return;
+        const [s, e] = out[fc.integer({ min: 0, max: out.length - 1 })];
+        const newInterval: Interval = [s + 1, e - 1];
+        const out2 = mergeIntervals([...out, newInterval]);
+        expect(out2).toEqual(out);
+      }),
+    );
+  });
 });
