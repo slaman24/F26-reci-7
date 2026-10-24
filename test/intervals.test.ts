@@ -17,6 +17,33 @@ const interval: fc.Arbitrary<Interval> = fc
   .map(([start, len]) => [start, start + len]);
 const intervalList = fc.array(interval);
 
+// Targeted generator: intervals that neither overlap nor touch, in shuffled
+// order. Each interval starts at least 1 after the previous one ends, so
+// gaps like [1, 2] and [3, 4] (which must stay separate) come up often.
+const disjointList: fc.Arbitrary<Interval[]> = fc
+  .tuple(
+    fc.integer({ min: -20, max: 20 }),
+    fc.array(fc.tuple(fc.integer({ min: 1, max: 3 }), fc.nat({ max: 5 }))),
+  )
+  .map(([first, gapsAndLengths]) => {
+    const result: Interval[] = [];
+    let next = first;
+    for (const [gap, len] of gapsAndLengths) {
+      result.push([next, next + len]);
+      next = next + len + gap;
+    }
+    return result;
+  })
+  .chain(xs => fc.shuffledSubarray(xs, { minLength: xs.length, maxLength: xs.length }));
+
+// Helper oracle: is point p covered by some interval in the list?
+const covers = (xs: readonly Interval[], p: number) => xs.some(([s, e]) => s <= p && p <= e);
+
+// Points to check: every integer and every half-integer in the generator's
+// range. Half-integers catch gaps like 2 < x < 3 between [1, 2] and [3, 4].
+const points: number[] = [];
+for (let p = -22; p <= 32; p += 0.5) points.push(p);
+
 describe('mergeIntervals', () => {
   // Pattern: invariant. Every input interval lies inside some output interval.
   it('every input interval lies inside some output interval', () => {
@@ -28,9 +55,6 @@ describe('mergeIntervals', () => {
       }),
     );
   });
-
-  // Add your properties here. Aim for at least one of each pattern:
-  // invariant, algebraic, metamorphic, differential, conditional.
 
   // Pattern: invariant. The output is sorted.
   it('the output is sorted', () => {
@@ -56,27 +80,76 @@ describe('mergeIntervals', () => {
     );
   });
 
-  // Pattern: metamorphic. Merging the output with itself gives the same output.
-  it('merging the output with itself gives the same output', () => {
+  // Pattern: invariant. The input array and its intervals are not modified.
+  it('does not modify the input', () => {
     fc.assert(
       fc.property(intervalList, xs => {
-        const out = mergeIntervals(xs);
-        const out2 = mergeIntervals(out);
-        expect(out2).toEqual(out);
+        const copy = structuredClone(xs);
+        mergeIntervals(xs);
+        expect(xs).toEqual(copy);
       }),
     );
   });
 
-  // Pattern: differential. Merging the output with a new interval that is already covered by the output gives the same output.
-  it('merging the output with a covered interval gives the same output', () => {
+  // Pattern: differential. A point is covered by the output exactly when it is covered by the input.
+  it('covers exactly the same points as the input', () => {
     fc.assert(
       fc.property(intervalList, xs => {
         const out = mergeIntervals(xs);
+        for (const p of points) {
+          expect(covers(out, p), `point ${p}`).toBe(covers(xs, p));
+        }
+      }),
+    );
+  });
+
+  // Pattern: algebraic. Merging is idempotent: merging the output again gives the same output.
+  it('merging the output again gives the same output', () => {
+    fc.assert(
+      fc.property(intervalList, xs => {
+        const out = mergeIntervals(xs);
+        expect(mergeIntervals(out)).toEqual(out);
+      }),
+    );
+  });
+
+  // Pattern: metamorphic. Shuffling the input does not change the output.
+  it('shuffling the input does not change the output', () => {
+    fc.assert(
+      fc.property(
+        intervalList.chain(xs =>
+          fc
+            .shuffledSubarray(xs, { minLength: xs.length, maxLength: xs.length })
+            .map(shuffled => [xs, shuffled] as const),
+        ),
+        ([xs, shuffled]) => {
+          expect(mergeIntervals(shuffled)).toEqual(mergeIntervals(xs));
+        },
+      ),
+    );
+  });
+
+  // Pattern: metamorphic. Adding an interval that the output already covers does not change the output.
+  it('adding an already-covered interval does not change the output', () => {
+    fc.assert(
+      fc.property(intervalList, fc.nat(), fc.nat(), fc.nat(), (xs, i, a, b) => {
+        const out = mergeIntervals(xs);
         if (out.length === 0) return;
-        const [s, e] = out[fc.integer({ min: 0, max: out.length - 1 })];
-        const newInterval: Interval = [s + 1, e - 1];
-        const out2 = mergeIntervals([...out, newInterval]);
-        expect(out2).toEqual(out);
+        // Build a sub-interval [lo, hi] of one output interval, valid by construction.
+        const [s, e] = out[i % out.length];
+        const lo = s + (a % (e - s + 1));
+        const hi = lo + (b % (e - lo + 1));
+        expect(mergeIntervals([...xs, [lo, hi]])).toEqual(out);
+      }),
+    );
+  });
+
+  // Pattern: conditional. If no two input intervals overlap or touch, the output is the input sorted by start.
+  it('already-disjoint input comes back sorted and otherwise unchanged', () => {
+    fc.assert(
+      fc.property(disjointList, xs => {
+        const sorted = [...xs].sort((a, b) => a[0] - b[0]);
+        expect(mergeIntervals(xs)).toEqual(sorted);
       }),
     );
   });
